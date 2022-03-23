@@ -6,7 +6,7 @@ use std::{fs::read_to_string, lazy::SyncLazy};
 pub struct Config {
     pub token: String,
     pub channels: Vec<u64>,
-	pub banned_roles: Vec<u64>
+    pub banned_roles: Vec<u64>,
 }
 
 pub static CONFIG: SyncLazy<Config> = SyncLazy::new(|| {
