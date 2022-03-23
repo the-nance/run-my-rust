@@ -102,9 +102,9 @@ async fn handle_event(cache: Arc<InMemoryCache>, http: Arc<Client>, (shard_id, e
 						        backtrace: false,
 						        tests: false,
 						        crate_type: "bin".to_string(),
-								code: splitted_newlines.collect::<Vec<&str>>().join(" ")
+								code: splitted_newlines.collect::<Vec<&str>>().join("\n")
 						    };
-
+							
 							let request = Request::builder()
 								.uri("https://play.rust-lang.org/execute")
 								.method("POST")
