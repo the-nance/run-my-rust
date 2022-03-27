@@ -4,6 +4,7 @@ use futures::StreamExt;
 use hyper::body::Buf;
 use hyper::{client::HttpConnector, Body, Client as HyperClinet, Request};
 use hyper_tls::HttpsConnector;
+use tracing_subscriber::FmtSubscriber;
 use twilight_http::request::AuditLogReason;
 use std::{
     error::Error,
@@ -11,7 +12,7 @@ use std::{
 };
 
 use tokio::{task};
-use tracing::{error, info};
+use tracing::{error, info, Level};
 use twilight_cache_inmemory::{InMemoryCache, InMemoryCacheBuilder, ResourceType};
 use twilight_gateway::{cluster::ClusterBuilder, Event, Intents};
 use twilight_http::{request::channel::reaction::RequestReactionType, Client};
@@ -31,18 +32,16 @@ mod play;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt::init();
+
+	let subscriber = FmtSubscriber::builder()
+		.with_max_level(Level::INFO)
+		.finish();
+
+	tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     info!("Starting up bot");
 
     let token = config::CONFIG.token.clone();
-
-    let (cluster, mut events) = ClusterBuilder::new(
-        token.clone(),
-        Intents::GUILD_BANS | Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::GUILD_MEMBERS,
-    )
-    .build()
-    .await?;
 
     let cache = Arc::new(
         InMemoryCacheBuilder::new()
@@ -54,10 +53,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .build(),
     );
-    let http = Arc::new(Client::builder().token(token).build());
+    let http = Arc::new(Client::builder().token(token.clone()).build());
     let hyper_cline =
         Arc::new(HyperClinet::builder().build::<_, hyper::Body>(HttpsConnector::new()));
 	
+	let (cluster, mut events) = ClusterBuilder::new(
+			token,
+			Intents::GUILDS
+			| Intents::GUILD_MEMBERS
+			| Intents::GUILD_MESSAGES
+			| Intents::MESSAGE_CONTENT
+		)
+		.http_client(http.clone())
+		.build()
+		.await?;
+	
+	//tokio::spawn(async move {
+	cluster.up().await;
+	//});
+	
+
 	let http_clone = http.clone();
 	task::spawn(async move {
 		let http = http_clone.clone();
@@ -116,12 +131,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 		}
 	});
 
-    tokio::spawn(async move {
-        cluster.up().await;
-    });
-
     while let Some(event) = events.next().await {
-		cache.update(&event.1);
+		// cache.update(&event.1);
         let cache = cache.clone();
         let http = http.clone();
         let hyper = hyper_cline.clone();
