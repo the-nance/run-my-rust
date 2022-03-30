@@ -6,6 +6,8 @@ use hyper::{client::HttpConnector, Body, Client as HyperClinet, Request};
 use hyper_tls::HttpsConnector;
 use tracing_subscriber::FmtSubscriber;
 use twilight_http::request::AuditLogReason;
+use twilight_model::application::component::text_input::TextInputStyle;
+use twilight_model::id::marker::GuildMarker;
 use std::{
     error::Error,
     sync::{Arc},
@@ -21,10 +23,11 @@ use twilight_model::{
         marker::{RoleMarker, ChannelMarker,ApplicationMarker},
         Id,
     },
-	application::{component::{Component,action_row::ActionRow,button::{Button,ButtonStyle}}},
-	http::interaction::{InteractionResponse,InteractionResponseType},
+	application::{component::{Component,action_row::ActionRow,button::{Button,ButtonStyle},TextInput},command::CommandType,},
+	http::{interaction::{InteractionResponse,InteractionResponseType,InteractionResponseData}, attachment::Attachment},
 	channel::message::MessageFlags
 };
+use twilight_util::builder::command::{BooleanBuilder, CommandBuilder, StringBuilder};
 
 mod config;
 mod play;
@@ -54,6 +57,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .build(),
     );
     let http = Arc::new(Client::builder().token(token.clone()).build());
+
+	let commands = &[
+		CommandBuilder::new(
+			"run".into(),
+			"Run some Rust out side of defined run-my-rust channels.".into(),
+			CommandType::ChatInput,
+		).guild_id(Id::<GuildMarker>::new(config::CONFIG.server_id)).default_permission(true).build(),
+		// CommandBuilder::new(
+		// 	"run-rust".into(),
+		// 	"Run rust from a message".into(),
+		// 	CommandType::Message,
+		// ).guild_id(Id::<GuildMarker>::new(config::CONFIG.server_id)).default_permission(true).build()
+	];
+	println!("{:?}", commands);
+	http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+		.set_guild_commands(Id::<GuildMarker>::new(config::CONFIG.server_id), commands).exec().await.unwrap();
+
     let hyper_cline =
         Arc::new(HyperClinet::builder().build::<_, hyper::Body>(HttpsConnector::new()));
 	
@@ -171,6 +191,175 @@ async fn handle_event(
         }
 		Event::InteractionCreate(interaction) => {
 			match &interaction.0 {
+				twilight_model::application::interaction::Interaction::ModalSubmit(modal) => {
+					let guild_id = match interaction.guild_id() {
+				        Some(g) =>g,
+				        None => {return Ok(())}
+				    };
+
+					// println!("{:#?}", modal);
+					http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+						.create_response(
+							modal.id, 
+							&modal.token,
+							&InteractionResponse {
+								kind: InteractionResponseType::DeferredChannelMessageWithSource,
+								data: None,
+				
+							}
+						)
+						.exec().await.unwrap();
+
+					if let Some(member) = &modal.member {
+						if let Some(user) = &member.user {
+							if cache.member(guild_id, user.id).is_none() {
+								http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+									.create_followup(
+										&modal.token,
+									)
+									.content("You're not cached. Send a message somewhere and press me again.").unwrap()
+									.flags(MessageFlags::EPHEMERAL)
+									.exec()
+									.await.unwrap();
+
+								return Ok(());							
+							}
+
+							let mut comps = modal.data.components.iter();
+							while let Some(action_row) = comps.next() {
+								for comp in &action_row.components {
+									if modal.data.custom_id == String::from("run-my-rust") {
+										match comp.custom_id.as_str() {
+											"code-to-run" => {
+												let content = comp.value.clone();
+												let playground = play::Playground {
+													channel: "stable".to_string(),
+													mode: "debug".to_string(),
+													edition: "2021".to_string(),
+													backtrace: false,
+													tests: false,
+													crate_type: "bin".to_string(),
+													code: if content.contains("fn main()") {
+														content
+													} else {
+														format!(
+															"fn main() {{ println!(\"{{:?}}\", {{ {} }} ) }}",
+															content
+														)
+													},
+												};
+					
+												let request = Request::builder()
+													.uri("https://play.rust-lang.org/execute")
+													.method("POST")
+													.header("User-Agent", "RunMyRust/1.0")
+													.header("Content-Type", "application/json")
+													.body(Body::from(serde_json::to_vec(&playground)?))?;
+					
+												let response = match http2.request(request).await {
+													Ok(r) => r,
+													Err(_) => return Ok(())
+												};
+					
+												let body = hyper::body::aggregate(response).await?;
+												let response: play::PlaygroundResult = serde_json::from_reader(body.reader())?;
+
+												let content = &format!(
+													"Result: {}\nStds:\n**Out:** {}\n**Err:** ```{}```",
+													response.success,
+													response.stdout,
+													response.stderr.replace('`', "\"")
+												);
+												
+												if content.len() > 2000 {
+													http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+													.create_followup(
+														&modal.token,
+													)
+													.content("<:ferrisbanne:958831785922416780> The output was too long. So here you go. Have an attachment. Is this what you wanted?").unwrap()
+													.attachments(&[
+														Attachment { 
+															description: None, 
+															file: content.clone().as_bytes().to_vec(), 
+															filename: format!("{}-{}.txt", guild_id.get(), user.id.get())
+														}
+													]).unwrap()
+													.exec()
+													.await.unwrap();
+												} else {
+													http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+													.create_followup(
+														&modal.token,
+													)
+													.content(content).unwrap()
+													.exec()
+													.await.unwrap();
+												}				
+											}
+											_ => continue
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				twilight_model::application::interaction::Interaction::ApplicationCommand(cmd) => {
+					// http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+					// 	.create_response(
+					// 		cmd.id, 
+					// 		&cmd.token,
+					// 		&InteractionResponse {
+					// 			kind: InteractionResponseType::DeferredChannelMessageWithSource,
+					// 			data: None,
+				
+					// 		}
+					// 	)
+					// 	.exec().await.unwrap();
+
+					match cmd.data.name.as_str() {
+						"run" => {
+							http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
+								.create_response(
+									cmd.id,
+									&cmd.token,
+									&InteractionResponse { 
+										kind: InteractionResponseType::Modal,
+										data: Some(InteractionResponseData {
+								            allowed_mentions: None,
+								            attachments: None,
+								            choices: None,
+								            components: Some(vec![
+												Component::ActionRow(ActionRow {
+													components: vec![
+														Component::TextInput(TextInput { 
+															custom_id: String::from("code-to-run"), 
+															label: String::from("Code to run"), 
+															max_length: None, 
+															min_length: None, 
+															placeholder: None, 
+															required: Some(true), 
+															style: TextInputStyle::Paragraph, 
+															value: None
+														})
+													]
+												})
+											]),
+								            content: None,
+								            custom_id: Some(String::from("run-my-rust")),
+								            embeds: None,
+								            flags: None,
+								            title: Some(String::from("Rust Runner 9000")),
+								            tts: Some(false),
+								        })			
+									}
+								)
+								.exec()
+								.await.unwrap();							
+						}
+						_ => {}
+					}
+				}
 			    twilight_model::application::interaction::Interaction::MessageComponent(msgcmp) => {
 					http.interaction(Id::<ApplicationMarker>::new(config::CONFIG.bot_id))
 						.create_response(

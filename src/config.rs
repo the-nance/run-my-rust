@@ -27,6 +27,7 @@ pub struct ButtonMenuSettings {
 pub struct Config {
     pub token: String,
 	pub bot_id: u64,
+	pub server_id: u64,
     pub channels: Vec<u64>,
     pub banned_roles: Vec<u64>,
 	pub settings: ButtonMenuSettings,
